@@ -348,7 +348,11 @@ class SleepTrackingService : Service() {
                 recordAudioGranted = !startedBySmartWake &&
                     checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) ==
                     PackageManager.PERMISSION_GRANTED,
-                bodySensorsGranted = checkSelfPermission(android.Manifest.permission.BODY_SENSORS) ==
+                // Same for "health": it rests on BODY_SENSORS, a while-in-use permission, so a
+                // background start claiming it is refused too. A window-trigger start falls back
+                // to the permission-free specialUse type; the accelerometer needs neither.
+                bodySensorsGranted = !startedBySmartWake &&
+                    checkSelfPermission(android.Manifest.permission.BODY_SENSORS) ==
                     PackageManager.PERMISSION_GRANTED
             )
         )
