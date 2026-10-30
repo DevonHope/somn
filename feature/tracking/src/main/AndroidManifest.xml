@@ -26,6 +26,11 @@
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
     <application>
+        <!-- Started by an exact alarm at the smart wake window start, explicit-only. -->
+        <receiver
+            android:name="dev.vic41148.somn.feature.tracking.receiver.SmartWakeArmReceiver"
+            android:exported="false" />
+
         <service
             android:name="dev.vic41148.somn.feature.tracking.service.SleepTrackingService"
             android:foregroundServiceType="health|microphone|specialUse"

@@ -29,6 +29,7 @@ import dev.vic41148.somn.core.domain.model.Alarm
 import dev.vic41148.somn.core.domain.model.TrackingMode
 import dev.vic41148.somn.core.domain.usecase.ClassifySleepStageUseCase
 import dev.vic41148.somn.core.domain.usecase.SmartAlarmUseCase
+import dev.vic41148.somn.core.domain.usecase.AlarmTimeCalculator
 import dev.vic41148.somn.feature.alarm.receiver.AlarmReceiver
 import dev.vic41148.somn.feature.alarm.service.AlarmService
 import dev.vic41148.somn.core.audio.sensor.AccelerometerCollector
@@ -44,6 +45,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.flow.filterNotNull
 import javax.inject.Inject
 
 /**
@@ -118,6 +121,13 @@ class SleepTrackingService : Service() {
     private var nextAlarm: Alarm? = null
     private var nextAlarmTimeMillis: Long? = null
 
+    // Movement of every epoch this session, for the smart-wake "movement burst" baseline.
+    private val sessionMagnitudes = ArrayList<Float>()
+
+    // True when the smart wake window trigger started this session (movement only, no mic).
+    private var startedBySmartWake = false
+    private var alarmEndedThisSession = false
+
     companion object {
         const val CHANNEL_ID      = "sleep_tracking_channel"
         const val ALERT_CHANNEL_ID = "sleep_alerts_channel"
@@ -126,6 +136,13 @@ class SleepTrackingService : Service() {
         const val ACTION_STOP     = "dev.vic41148.somn.action.STOP_TRACKING"
         const val EXTRA_SESSION_ID    = "session_id"
         const val EXTRA_TRACKING_MODE = "tracking_mode"
+        /** Alarm whose smart wake window this session should watch. Absent: the next enabled alarm. */
+        const val EXTRA_ALARM_ID = "alarm_id"
+        /** Set by SmartWakeArmReceiver: started from the background at the window start, movement only. */
+        const val EXTRA_STARTED_BY_SMART_WAKE = "started_by_smart_wake"
+
+        /** Wake lock ceiling. Must outlast a long night: the old 8 h cap expired before late alarms. */
+        private const val WAKE_LOCK_TIMEOUT_MS = 14 * 60 * 60 * 1000L
         // Tapping the ongoing tracking notification opens MainActivity with this extra set, so
         // the NavGraph can land straight on the tracking screen (Wake Up button) instead of the
         // Home dead-end. Carried on the launcher intent so the service never imports app classes.
@@ -182,14 +199,48 @@ class SleepTrackingService : Service() {
         fun startTracking(
             context: Context,
             sessionId: Long,
-            mode: TrackingMode = TrackingMode.ACCELEROMETER
+            mode: TrackingMode = TrackingMode.ACCELEROMETER,
+            alarmId: Long = -1L,
+            startedBySmartWake: Boolean = false
         ) {
             val intent = Intent(context, SleepTrackingService::class.java).apply {
                 action = ACTION_START
                 putExtra(EXTRA_SESSION_ID, sessionId)
                 putExtra(EXTRA_TRACKING_MODE, mode.name)
+                putExtra(EXTRA_ALARM_ID, alarmId)
+                putExtra(EXTRA_STARTED_BY_SMART_WAKE, startedBySmartWake)
             }
             context.startForegroundService(intent)
+        }
+
+        private val _watchAlarmRequests = MutableStateFlow<Long?>(null)
+
+        /**
+         * Asks a running tracking session to watch [alarmId]'s smart wake window. Used when the
+         * window opens while tracking is already on, in case the session picked another alarm.
+         */
+        fun watchAlarm(alarmId: Long) {
+            if (alarmId != -1L) _watchAlarmRequests.value = alarmId
+        }
+
+        /** A session the service ended itself because an alarm rang. */
+        data class AlarmEndedSession(
+            val sessionId: Long,
+            val startedBySmartWake: Boolean,
+            val endedAtMillis: Long,
+            val avgBrpm: Float?
+        )
+
+        private val _sessionEndedByAlarm = MutableStateFlow<AlarmEndedSession?>(null)
+
+        /**
+         * Set when an alarm (smart or on-time) ends tracking. The ViewModel completes and scores
+         * the session from it, so the morning shows stats without the user tapping Stop.
+         */
+        val sessionEndedByAlarm: StateFlow<AlarmEndedSession?> = _sessionEndedByAlarm.asStateFlow()
+
+        fun consumeSessionEndedByAlarm(sessionId: Long) {
+            if (_sessionEndedByAlarm.value?.sessionId == sessionId) _sessionEndedByAlarm.value = null
         }
 
         fun stopTracking(context: Context) {
@@ -210,6 +261,20 @@ class SleepTrackingService : Service() {
         serviceScope.launch {
             preferencesRepository.snoreNudgeEnabled.collect { snoreNudgeEnabled = it }
         }
+        // Any alarm ringing (the on-time one from AlarmManager, or a smart wake) ends the night.
+        // Before, an on-time alarm left tracking running with the session open, so the morning
+        // showed no stats until the user found the tracking screen and tapped Stop.
+        serviceScope.launch {
+            AlarmService.isAlarmFiring.collect { firing ->
+                if (firing) endSessionForAlarm()
+            }
+        }
+        serviceScope.launch {
+            _watchAlarmRequests.filterNotNull().collect { alarmId ->
+                _watchAlarmRequests.value = null
+                if (_trackingState.value == TrackingState.TRACKING) loadWatchedAlarm(alarmId)
+            }
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -218,10 +283,17 @@ class SleepTrackingService : Service() {
                 val sessionId = intent.getLongExtra(EXTRA_SESSION_ID, -1)
                 val modeName  = intent.getStringExtra(EXTRA_TRACKING_MODE) ?: TrackingMode.ACCELEROMETER.name
                 val mode      = try { TrackingMode.valueOf(modeName) } catch (_: Exception) { TrackingMode.ACCELEROMETER }
-                if (sessionId != -1L) {
+                val alarmId   = intent.getLongExtra(EXTRA_ALARM_ID, -1L)
+                val bySmartWake = intent.getBooleanExtra(EXTRA_STARTED_BY_SMART_WAKE, false)
+                if (bySmartWake && _trackingState.value == TrackingState.TRACKING) {
+                    // The window trigger raced a running session: keep the current session
+                    // rather than restarting collectors mid-night.
+                    if (alarmId != -1L) serviceScope.launch { loadWatchedAlarm(alarmId) }
+                } else if (sessionId != -1L) {
                     try {
+                        startedBySmartWake = bySmartWake
                         startTrackingForeground()
-                        startTracking(sessionId, mode)
+                        startTracking(sessionId, mode, alarmId)
                     } catch (e: Exception) {
                         // A failed foreground promotion or synchronous session-start error must
                         // never take the whole app down with it - stop cleanly so the system
@@ -271,7 +343,10 @@ class SleepTrackingService : Service() {
             notification,
             startForegroundTypeForApi(
                 sdkInt = Build.VERSION.SDK_INT,
-                recordAudioGranted = checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) ==
+                // A background start (smart wake window trigger) must not claim the microphone
+                // type: Android 14+ throws for while-in-use types started from the background.
+                recordAudioGranted = !startedBySmartWake &&
+                    checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) ==
                     PackageManager.PERMISSION_GRANTED,
                 bodySensorsGranted = checkSelfPermission(android.Manifest.permission.BODY_SENSORS) ==
                     PackageManager.PERMISSION_GRANTED
@@ -279,7 +354,7 @@ class SleepTrackingService : Service() {
         )
     }
 
-    private fun startTracking(sessionId: Long, mode: TrackingMode) {
+    private fun startTracking(sessionId: Long, mode: TrackingMode, alarmId: Long = -1L) {
         _currentSessionId.value = sessionId
         _trackingState.value    = TrackingState.TRACKING
         notifyTrackingStateChanged(this)
@@ -292,28 +367,32 @@ class SleepTrackingService : Service() {
         pendingRawEpoch = null
         prevPrevStage   = null
         prevStage       = null
+        sessionMagnitudes.clear()
+        alarmEndedThisSession = false
+        _sessionEndedByAlarm.value = null
 
         val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
         wakeLock = pm.newWakeLock(
             PowerManager.PARTIAL_WAKE_LOCK, "Somn::TrackingWakeLock"
-        ).apply { acquire(8 * 60 * 60 * 1000L) }
+        ).apply { acquire(WAKE_LOCK_TIMEOUT_MS) }
 
         serviceScope.launch {
-            nextAlarm = alarmRepository.getNextAlarm()
-            if (nextAlarm != null) {
-                val calendar = java.util.Calendar.getInstance().apply {
-                    set(java.util.Calendar.HOUR_OF_DAY, nextAlarm!!.hour)
-                    set(java.util.Calendar.MINUTE, nextAlarm!!.minute)
-                    set(java.util.Calendar.SECOND, 0)
-                    set(java.util.Calendar.MILLISECOND, 0)
-                    if (before(java.util.Calendar.getInstance())) add(java.util.Calendar.DAY_OF_YEAR, 1)
-                }
-                nextAlarmTimeMillis = calendar.timeInMillis
+            if (alarmId != -1L) {
+                loadWatchedAlarm(alarmId)
+            } else {
+                // The alarm that actually rings next, honouring repeat days. The old lookup
+                // ignored repeat days and could watch a weekday alarm on a Saturday morning.
+                val now = System.currentTimeMillis()
+                val next = alarmRepository.getEnabledAlarms()
+                    .mapNotNull { a -> AlarmTimeCalculator.nextTriggerMillis(a, now)?.let { a to it } }
+                    .minByOrNull { it.second }
+                nextAlarm = next?.first
+                nextAlarmTimeMillis = next?.second
             }
         }
 
         // ── Audio pipeline (mic-based events + breathing) ──────────────────────
-        if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+        if (!startedBySmartWake && checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
             // Only start AudioCollector if NOT in sonar mode (sonar owns the mic)
             if (mode != TrackingMode.SONAR) {
                 serviceScope.launch {
@@ -467,13 +546,22 @@ class SleepTrackingService : Service() {
         prevStage     = stage
         pendingRawEpoch = rawEpoch
         _finalEpoch.value = rawEpoch
+        sessionMagnitudes.add(epochData.movementMagnitude)
 
         // Smart alarm uses the raw current stage - it is the freshest signal available (the
         // current epoch has no successor to smooth against yet, so this is what the
         // pre-smoothing code would have used anyway).
         nextAlarmTimeMillis?.let { alarmTime ->
-            if (smartAlarmUseCase.shouldWakeEarly(System.currentTimeMillis(), alarmTime,
-                    nextAlarm?.wakeWindowMinutes ?: 30, stage)) {
+            if (smartAlarmUseCase.shouldWakeEarly(
+                    currentTimeMillis = System.currentTimeMillis(),
+                    alarmTimeMillis = alarmTime,
+                    wakeWindowMinutes = nextAlarm?.wakeWindowMinutes ?: 30,
+                    currentStage = stage,
+                    movementMagnitude = epochData.movementMagnitude,
+                    // Baseline excludes the current epoch so a burst cannot dilute its own threshold.
+                    baselineMagnitude = medianOf(sessionMagnitudes.dropLast(1)),
+                    baselineEpochCount = sessionMagnitudes.size - 1
+                )) {
                 fireSmartAlarm()
             }
         }
@@ -536,9 +624,53 @@ class SleepTrackingService : Service() {
             putExtra(AlarmReceiver.EXTRA_WAKE_WINDOW_MINUTES, alarm.wakeWindowMinutes)
         }
         startForegroundService(si)
-        // Smart-alarm wake: no ViewModel stop path follows, so flush the final epoch here
-        // (async, best-effort - never block the main thread).
-        stopTracking(flushFinalEpochHere = true)
+        // AlarmService flips isAlarmFiring, which ends the session via endSessionForAlarm().
+    }
+
+    /** Points the smart wake watcher at a specific alarm and its next trigger time. */
+    private suspend fun loadWatchedAlarm(alarmId: Long) {
+        val alarm = alarmRepository.getAlarm(alarmId) ?: return
+        if (!alarm.isEnabled) return
+        nextAlarm = alarm
+        nextAlarmTimeMillis = AlarmTimeCalculator.nextTriggerMillis(alarm, System.currentTimeMillis())
+    }
+
+    /**
+     * Ends tonight's tracking because an alarm is ringing: writes the held-back final epoch,
+     * stops the collectors, hands the session to the ViewModel for scoring, and takes the
+     * service out of the foreground.
+     */
+    private suspend fun endSessionForAlarm() {
+        if (_trackingState.value != TrackingState.TRACKING || alarmEndedThisSession) return
+        alarmEndedThisSession = true
+        val sessionId = _currentSessionId.value ?: return
+        nextAlarmTimeMillis = null
+        // Written here, in order, before the service stops, so scoring sees every epoch.
+        _finalEpoch.value?.let { last ->
+            _finalEpoch.value = null
+            try {
+                sleepRepository.insertEpoch(last)
+            } catch (e: Exception) {
+                android.util.Log.e("SleepTrackingService", "Failed to flush final epoch", e)
+            }
+        }
+        withContext(Dispatchers.Main) {
+            val avgBrpm = _currentAvgBrpm.value
+            stopViaActionStop = true
+            stopTracking(flushFinalEpochHere = false)
+            _sessionEndedByAlarm.value = AlarmEndedSession(
+                sessionId, startedBySmartWake, System.currentTimeMillis(), avgBrpm
+            )
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+        }
+    }
+
+    private fun medianOf(values: List<Float>): Float? {
+        if (values.isEmpty()) return null
+        val sorted = values.sorted()
+        val mid = sorted.size / 2
+        return if (sorted.size % 2 == 1) sorted[mid] else (sorted[mid - 1] + sorted[mid]) / 2f
     }
 
     private fun fireLowBreathRateAlarm(brpm: Int) {

@@ -6,7 +6,8 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import dev.vic41148.somn.feature.alarm.service.AlarmService
-import java.util.Calendar
+import android.content.ComponentName
+import android.os.Build
 
 /**
  * Receives alarm triggers from AlarmManager and starts the AlarmService.
@@ -60,6 +61,61 @@ class AlarmReceiver : BroadcastReceiver() {
                 AlarmManager.AlarmClockInfo(timeInMillis, pendingIntent),
                 pendingIntent
             )
+        }
+
+        /**
+         * Receiver in feature:tracking that starts movement tracking when a smart wake window
+         * opens. Named by class string because feature:tracking depends on this module, not
+         * the other way round. Still an explicit component, so nothing else can receive it.
+         */
+        const val SMART_WAKE_ARM_RECEIVER =
+            "dev.vic41148.somn.feature.tracking.receiver.SmartWakeArmReceiver"
+
+        /** Offset keeping the arm trigger's PendingIntent distinct from the ring trigger's. */
+        private const val ARM_REQUEST_CODE_OFFSET = 0x4000_0000
+
+        private fun smartWakeArmPendingIntent(context: Context, alarmId: Long): PendingIntent {
+            val intent = Intent().apply {
+                component = ComponentName(context.packageName, SMART_WAKE_ARM_RECEIVER)
+                putExtra(EXTRA_ALARM_ID, alarmId)
+            }
+            return PendingIntent.getBroadcast(
+                context,
+                ARM_REQUEST_CODE_OFFSET xor alarmId.toInt(),
+                intent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+        }
+
+        /**
+         * Schedules the "smart wake window opens" trigger. Exact + allow-while-idle so it fires
+         * on time in Doze, and an exact-alarm callback is allowed to start a foreground service
+         * from the background, which is what the receiver does.
+         */
+        fun scheduleSmartWakeArm(context: Context, alarmId: Long, timeInMillis: Long) {
+            if (timeInMillis <= System.currentTimeMillis()) return
+            val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+            val pendingIntent = smartWakeArmPendingIntent(context, alarmId)
+            val canExact = Build.VERSION.SDK_INT < Build.VERSION_CODES.S ||
+                alarmManager.canScheduleExactAlarms()
+            try {
+                if (canExact) {
+                    alarmManager.setExactAndAllowWhileIdle(
+                        AlarmManager.RTC_WAKEUP, timeInMillis, pendingIntent
+                    )
+                } else {
+                    alarmManager.setAndAllowWhileIdle(
+                        AlarmManager.RTC_WAKEUP, timeInMillis, pendingIntent
+                    )
+                }
+            } catch (e: SecurityException) {
+                android.util.Log.w("AlarmReceiver", "Could not schedule smart wake arm", e)
+            }
+        }
+
+        fun cancelSmartWakeArm(context: Context, alarmId: Long) {
+            val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+            alarmManager.cancel(smartWakeArmPendingIntent(context, alarmId))
         }
 
         fun cancelAlarm(context: Context, alarmId: Long) {

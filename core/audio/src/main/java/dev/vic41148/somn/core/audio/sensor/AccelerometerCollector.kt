@@ -24,7 +24,12 @@ import kotlin.math.sqrt
 class AccelerometerCollector(context: Context) : SensorEventListener {
 
     private val sensorManager = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
-    private val accelerometer = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
+    // Prefer the wake-up variant: its samples are delivered even if the CPU suspends, so a
+    // ROM that is aggressive about sleeping (or a lost wake lock) cannot silently stop epochs.
+    private val accelerometer = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER, true)
+        ?: sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
+
+    private val gravityBaseline = GravityBaseline()
 
     private val epochChannel = Channel<EpochData>(Channel.BUFFERED)
     val epochFlow: Flow<EpochData> = epochChannel.receiveAsFlow()
@@ -48,13 +53,14 @@ class AccelerometerCollector(context: Context) : SensorEventListener {
     companion object {
         private const val EPOCH_DURATION_MS = 30_000L  // 30-second epoch window (wall-clock)
         private const val SENSOR_DELAY_US = 100_000    // 100ms = 10Hz sampling rate
-        private const val GRAVITY = 9.81f
+        private const val GRAVITY = 9.81f  // Only the lift detector's initial Z guess uses this.
         private const val LIFT_Z_THRESHOLD = 4.0f          // Z-axis change indicating pickup
         private const val SIGNIFICANT_MOTION_THRESHOLD = 1.5f  // Large movement = likely awake
     }
 
     fun start() {
         samples.clear()
+        gravityBaseline.reset()
         epochStartTime = System.currentTimeMillis()
         lastZ = GRAVITY  // Assume phone flat initially
         liftDetected = false
@@ -87,9 +93,8 @@ class AccelerometerCollector(context: Context) : SensorEventListener {
         val y = event.values[1]
         val z = event.values[2]
 
-        // RMS magnitude minus gravity
-        val magnitude = sqrt(x * x + y * y + z * z) - GRAVITY
-        val absMagnitude = abs(magnitude)
+        // Magnitude relative to this sensor's own resting reading (see GravityBaseline).
+        val absMagnitude = gravityBaseline.deviation(sqrt(x * x + y * y + z * z))
         samples.add(absMagnitude)
 
         // Phone-lifted detection: significant Z-axis change from resting position
