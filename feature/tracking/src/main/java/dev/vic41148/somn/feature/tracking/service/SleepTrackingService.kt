@@ -658,12 +658,21 @@ class SleepTrackingService : Service() {
                 android.util.Log.e("SleepTrackingService", "Failed to flush final epoch", e)
             }
         }
+        val endedAtMillis = System.currentTimeMillis()
+        // Also on disk, so the night is still scored as ended by the alarm if Android kills the
+        // process before the app is opened (the flow below lives only in memory).
+        withContext(Dispatchers.IO) {
+            AlarmEndedSessionStore.save(
+                this@SleepTrackingService,
+                AlarmEndedSession(sessionId, startedBySmartWake, endedAtMillis, null)
+            )
+        }
         withContext(Dispatchers.Main) {
             val avgBrpm = _currentAvgBrpm.value
             stopViaActionStop = true
             stopTracking(flushFinalEpochHere = false)
             _sessionEndedByAlarm.value = AlarmEndedSession(
-                sessionId, startedBySmartWake, System.currentTimeMillis(), avgBrpm
+                sessionId, startedBySmartWake, endedAtMillis, avgBrpm
             )
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()

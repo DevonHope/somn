@@ -30,6 +30,7 @@ import dev.vic41148.somn.core.notifications.DeepSleepAlertNotifier
 import dev.vic41148.somn.core.notifications.HormonalPhaseNotifier
 import dev.vic41148.somn.core.notifications.PPDRiskNotifier
 import dev.vic41148.somn.feature.tracking.service.SleepTrackingService
+import dev.vic41148.somn.feature.tracking.service.AlarmEndedSessionStore
 import dev.vic41148.somn.feature.tracking.service.TrackingState
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.Flow
@@ -197,6 +198,7 @@ class SleepTrackingViewModel @Inject constructor(
                     )
                 }
                 SleepTrackingService.consumeSessionEndedByAlarm(ended.sessionId)
+                AlarmEndedSessionStore.clear(appContext, ended.sessionId)
             }
         }
     }
@@ -215,6 +217,18 @@ class SleepTrackingViewModel @Inject constructor(
             val session = sleepRepository.getActiveSession() ?: return@launch
             // An alarm-ended session is completed (not as partial) by completeSessionsEndedByAlarm.
             if (SleepTrackingService.sessionEndedByAlarm.value?.sessionId == session.id) return@launch
+            // The alarm ended it but the process died before it was scored (issue #5): score it
+            // as a normal night ending at the alarm, not as an interrupted one.
+            AlarmEndedSessionStore.get(appContext, session.id)?.let { ended ->
+                completeAndScore(
+                    session = session,
+                    endTimeMillis = ended.endedAtMillis,
+                    isPartial = ended.startedBySmartWake,
+                    avgBrpm = session.avgBreathingRateBrpm
+                )
+                AlarmEndedSessionStore.clear(appContext, session.id)
+                return@launch
+            }
             val latestEpoch = sleepRepository.getLatestEpoch(session.id)
             val referenceMillis = latestEpoch?.timestampMillis ?: session.startTimeMillis
             val staleThresholdMillis = 2 * EPOCH_DURATION_MS
