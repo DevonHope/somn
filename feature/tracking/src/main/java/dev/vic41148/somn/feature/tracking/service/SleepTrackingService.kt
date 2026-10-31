@@ -223,14 +223,6 @@ class SleepTrackingService : Service() {
             if (alarmId != -1L) _watchAlarmRequests.value = alarmId
         }
 
-        /** A session the service ended itself because an alarm rang. */
-        data class AlarmEndedSession(
-            val sessionId: Long,
-            val startedBySmartWake: Boolean,
-            val endedAtMillis: Long,
-            val avgBrpm: Float?
-        )
-
         private val _sessionEndedByAlarm = MutableStateFlow<AlarmEndedSession?>(null)
 
         /**
@@ -845,6 +837,14 @@ class SleepTrackingService : Service() {
 }
 
 enum class TrackingState { IDLE, TRACKING, PAUSED }
+
+/** A session the tracking service ended itself because an alarm rang. */
+data class AlarmEndedSession(
+    val sessionId: Long,
+    val startedBySmartWake: Boolean,
+    val endedAtMillis: Long,
+    val avgBrpm: Float?
+)
 
 /**
  * Computes the foreground-service type mask to pass to `startForeground(id, notification, type)`

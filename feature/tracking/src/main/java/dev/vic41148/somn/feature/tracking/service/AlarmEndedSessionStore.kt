@@ -17,7 +17,7 @@ object AlarmEndedSessionStore {
     private const val KEY_ENDED_AT = "ended_at"
     private const val KEY_SMART_WAKE = "started_by_smart_wake"
 
-    fun save(context: Context, ended: SleepTrackingService.AlarmEndedSession) {
+    fun save(context: Context, ended: AlarmEndedSession) {
         prefs(context).edit()
             .putLong(KEY_SESSION_ID, ended.sessionId)
             .putLong(KEY_ENDED_AT, ended.endedAtMillis)
@@ -26,10 +26,10 @@ object AlarmEndedSessionStore {
     }
 
     /** The saved marker for [sessionId], or null if that session was not ended by an alarm. */
-    fun get(context: Context, sessionId: Long): SleepTrackingService.AlarmEndedSession? {
+    fun get(context: Context, sessionId: Long): AlarmEndedSession? {
         val p = prefs(context)
         if (p.getLong(KEY_SESSION_ID, -1L) != sessionId) return null
-        return SleepTrackingService.AlarmEndedSession(
+        return AlarmEndedSession(
             sessionId = sessionId,
             startedBySmartWake = p.getBoolean(KEY_SMART_WAKE, false),
             endedAtMillis = p.getLong(KEY_ENDED_AT, System.currentTimeMillis()),
