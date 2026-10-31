@@ -5,6 +5,15 @@ Release for every `v*` tag using the section of this file whose header contains
 the tag — keep section headers unique and tag-containing (for example
 `## Somn v0.1.2 — ...`).
 
+## Unreleased — smart wake fixes (fork)
+
+- **Smart wake watches the window even if you forget to start tracking.** An exact alarm at the window start starts movement-only tracking, or resumes a session the OS killed.
+- **Longer nights keep tracking.** The tracking wake lock now lasts 14 hours instead of 8.
+- **Movement is measured against the phone's own resting reading** instead of a fixed 9.81 m/s², and a clear movement burst inside the window counts as a wake moment.
+- **The alarm ends and scores the night,** so stats appear without tapping Stop, even if Android kills Somn before you open it.
+- **Alarm vibration works in silent mode and Do Not Disturb.** It is tagged as an alarm, starts soft and builds up, and leads the sound by 30 seconds. New per-alarm Vibrate and Vibration only switches.
+- **CI uploads the debug APK** so a test phone can install it directly.
+
 ## Somn v0.2.0 — widgets & consistency
 
 - **Widget suite.** Morning Briefing, Last Night, Weekly, Sleep Debt, Alarm, and Weekly Rhythm widgets, with score rings and picker previews.
