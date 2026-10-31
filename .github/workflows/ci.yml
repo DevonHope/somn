@@ -158,6 +158,16 @@ jobs:
           path: '**/build/reports/tests/**'
           if-no-files-found: ignore
 
+      # Lets the debug build be downloaded and installed straight onto a test phone.
+      - name: Upload debug APK
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: somn-debug-apk
+          path: app/build/outputs/apk/standalone/debug/*.apk
+          if-no-files-found: ignore
+          retention-days: 14
+
       - name: Upload lint report
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
