@@ -166,6 +166,8 @@ jobs:
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
         with:
           name: ${{ steps.notes.outputs.title }}
+          # A tag with a suffix (v0.2.1-beta.1) is published as a pre-release.
+          prerelease: ${{ contains(github.ref_name, '-') }}
           body_path: ${{ runner.temp }}/release-body.md
           files: |
             app/build/outputs/apk/standalone/release/Somn-${{ github.ref_name }}.apk

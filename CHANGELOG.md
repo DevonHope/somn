@@ -5,7 +5,7 @@ Release for every `v*` tag using the section of this file whose header contains
 the tag — keep section headers unique and tag-containing (for example
 `## Somn v0.1.2 — ...`).
 
-## Unreleased — smart wake fixes (fork)
+## Somn v0.2.1-beta.1 — smart wake fixes (pre-release)
 
 - **Smart wake watches the window even if you forget to start tracking.** An exact alarm at the window start starts movement-only tracking, or resumes a session the OS killed.
 - **Longer nights keep tracking.** The tracking wake lock now lasts 14 hours instead of 8.
@@ -13,6 +13,7 @@ the tag — keep section headers unique and tag-containing (for example
 - **The alarm ends and scores the night,** so stats appear without tapping Stop, even if Android kills Somn before you open it.
 - **Alarm vibration works in silent mode and Do Not Disturb.** It is tagged as an alarm, starts soft and builds up, and leads the sound by 30 seconds. New per-alarm Vibrate and Vibration only switches.
 - **CI uploads the debug APK** so a test phone can install it directly.
+- **Pre-release tags** (`v0.2.1-beta.1`) publish as GitHub pre-releases and keep a clean version number.
 - **The Home tab always goes Home.** It used to restore whatever screen was last open on top of Home (tracking, a morning review), so tapping it seemed to do nothing.
 
 ## Somn v0.2.0 — widgets & consistency
