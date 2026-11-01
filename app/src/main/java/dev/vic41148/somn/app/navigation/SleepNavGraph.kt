@@ -491,12 +491,26 @@ fun SleepNavGraph(
                     screens = bottomNavScreens,
                     selectedIndex = selectedIndex,
                     onSelect = { screen ->
-                        navController.navigate(screen.route) {
-                            popUpTo(navController.graph.findStartDestination().id) {
-                                saveState = true
+                        val reselect = bottomNavScreens.getOrNull(selectedIndex) == screen
+                        when {
+                            // Home is the start destination. Restoring its saved state brought
+                            // back whatever was pushed on top of it (the tracking screen, a
+                            // morning review), so tapping Home looked like it did nothing. Home
+                            // always goes back to the Home screen itself.
+                            screen == Screen.Home -> {
+                                if (!navController.popBackStack(Screen.Home.route, inclusive = false)) {
+                                    navController.navigate(Screen.Home.route) { launchSingleTop = true }
+                                }
                             }
-                            launchSingleTop = true
-                            restoreState = true
+                            // Tapping the tab you're already on returns to that tab's top level.
+                            reselect -> navController.popBackStack(screen.route, inclusive = false)
+                            else -> navController.navigate(screen.route) {
+                                popUpTo(navController.graph.findStartDestination().id) {
+                                    saveState = true
+                                }
+                                launchSingleTop = true
+                                restoreState = true
+                            }
                         }
                     },
                     modifier = Modifier.align(Alignment.BottomCenter)

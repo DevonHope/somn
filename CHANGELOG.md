@@ -13,6 +13,7 @@ the tag — keep section headers unique and tag-containing (for example
 - **The alarm ends and scores the night,** so stats appear without tapping Stop, even if Android kills Somn before you open it.
 - **Alarm vibration works in silent mode and Do Not Disturb.** It is tagged as an alarm, starts soft and builds up, and leads the sound by 30 seconds. New per-alarm Vibrate and Vibration only switches.
 - **CI uploads the debug APK** so a test phone can install it directly.
+- **The Home tab always goes Home.** It used to restore whatever screen was last open on top of Home (tracking, a morning review), so tapping it seemed to do nothing.
 
 ## Somn v0.2.0 — widgets & consistency
 
