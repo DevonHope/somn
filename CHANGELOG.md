@@ -5,9 +5,10 @@ Release for every `v*` tag using the section of this file whose header contains
 the tag — keep section headers unique and tag-containing (for example
 `## Somn v0.1.2 — ...`).
 
-## Somn v0.2.1-beta.2 — tab fixes (pre-release)
+## Somn v0.2.2-beta.1 — tab fixes (pre-release)
 
 - **Every bottom-bar tab opens its own page.** Tabs used to restore the last page opened inside them (an alarm being edited, a session), so the Alarms tab could stop showing the alarm list. Each tap now lands on the tab's top-level page, and a page opened from a tab keeps that tab highlighted.
+- **A release tag without its own changelog section still publishes,** using the newest section, instead of failing after the APK is built.
 
 ## Somn v0.2.1-beta.1 — smart wake fixes (pre-release)
 

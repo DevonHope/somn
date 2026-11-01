@@ -136,8 +136,7 @@ jobs:
       # section per release) instead of a hardcoded notes file: the section whose
       # header contains the pushed tag becomes the release title and body, so
       # cutting a release is just bumping the version and pushing the tag. The step
-      # fails loudly if no section matches, rather than publishing an empty-body
-      # release.
+      # falls back to the newest section if none matches the tag.
       - name: Extract release notes for this tag
         id: notes
         shell: bash
@@ -152,12 +151,20 @@ jobs:
             }
             in_section { print }
           ' CHANGELOG.md | sed -n '/[^[:space:]]/,$p' > "$RUNNER_TEMP/release-body.md"
-          test -s "$RUNNER_TEMP/release-body.md" || {
-            echo "::error::No CHANGELOG.md section matches tag $TAG — add one and re-push."
-            exit 1
-          }
           TITLE="$(awk -v tag="$TAG" \
             '$0 ~ /^## / && index($0, tag) > 0 { sub(/^## /, ""); print; exit }' CHANGELOG.md)"
+          # No section names this tag (a tag typed on the GitHub release page): use the newest
+          # section instead of failing after the APK is already built and signed.
+          if [ ! -s "$RUNNER_TEMP/release-body.md" ]; then
+            echo "::warning::No CHANGELOG.md section matches tag $TAG; using the newest section."
+            awk '/^## / { if (in_section) exit; in_section = 1; next } in_section { print }' \
+              CHANGELOG.md | sed -n '/[^[:space:]]/,$p' > "$RUNNER_TEMP/release-body.md"
+            TITLE="Somn $TAG"
+          fi
+          test -s "$RUNNER_TEMP/release-body.md" || {
+            echo "::error::CHANGELOG.md has no release sections."
+            exit 1
+          }
           echo "title=$TITLE" >> "$GITHUB_OUTPUT"
           echo "--- release body ---"
           cat "$RUNNER_TEMP/release-body.md"
