@@ -503,7 +503,8 @@ fun SleepNavGraph(
                         // flat, so the old "is this tab selected" check never matched a page
                         // opened from a tab either.
                         when {
-                            currentDestination?.route == screen.route -> Unit
+                            // Read the live destination, not one captured when this lambda was made.
+                            navController.currentDestination?.route == screen.route -> Unit
                             screen == Screen.Home -> {
                                 if (!navController.popBackStack(Screen.Home.route, inclusive = false)) {
                                     navController.navigate(Screen.Home.route) { launchSingleTop = true }
