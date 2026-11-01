@@ -25,11 +25,12 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
-import androidx.navigation.NavDestination.Companion.hierarchy
-import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -121,6 +122,13 @@ fun SleepNavGraph(
     val startDestination = if (isOnboardingCompleted) Screen.Home.route else "onboarding"
 
     val hideBottomBar = currentDestination?.route in hideNavRoutes
+
+    // The tab a page belongs to: the last tab screen shown. Pages opened from a tab (an alarm,
+    // a session) keep their tab highlighted instead of falling back to Home.
+    var currentTab by rememberSaveable { mutableStateOf(Screen.Home.route) }
+    LaunchedEffect(currentDestination?.route) {
+        currentDestination?.route?.takeIf { it in bottomNavRoutes }?.let { currentTab = it }
+    }
 
     // The alarm_firing route used to be registered but unreachable, nothing ever navigated to
     // it, so while the alarm was ringing the in-app full-screen experience only ever existed as
@@ -479,37 +487,33 @@ fun SleepNavGraph(
         }
 
             // Floating dock: overlays the content bottom (no slot reserve), so it
-            // can never slice cards with a band. Index from the destination
-            // hierarchy so back navigation and deep links move it too, not just taps.
+            // can never slice cards with a band. The highlight follows currentTab, so back
+            // navigation and deep links move it too, not just taps.
             if (!hideBottomBar) {
-                val selectedIndex = bottomNavScreens.indexOfFirst { screen ->
-                    currentDestination?.hierarchy?.any {
-                        it.route == screen.route
-                    } == true
-                }.coerceAtLeast(0)
+                val selectedIndex = bottomNavScreens.indexOfFirst { it.route == currentTab }
+                    .coerceAtLeast(0)
                 SomnBottomBar(
                     screens = bottomNavScreens,
                     selectedIndex = selectedIndex,
                     onSelect = { screen ->
-                        val reselect = bottomNavScreens.getOrNull(selectedIndex) == screen
+                        // Every tab tap lands on that tab's own top-level screen, with Home as the
+                        // only screen kept underneath. Saving and restoring each tab's stack used
+                        // to bring back whatever page was last open inside it (an alarm editor,
+                        // a session, the tracking screen), so the tab looked dead. The graph is
+                        // flat, so the old "is this tab selected" check never matched a page
+                        // opened from a tab either.
                         when {
-                            // Home is the start destination. Restoring its saved state brought
-                            // back whatever was pushed on top of it (the tracking screen, a
-                            // morning review), so tapping Home looked like it did nothing. Home
-                            // always goes back to the Home screen itself.
+                            currentDestination?.route == screen.route -> Unit
                             screen == Screen.Home -> {
                                 if (!navController.popBackStack(Screen.Home.route, inclusive = false)) {
                                     navController.navigate(Screen.Home.route) { launchSingleTop = true }
                                 }
                             }
-                            // Tapping the tab you're already on returns to that tab's top level.
-                            reselect -> navController.popBackStack(screen.route, inclusive = false)
                             else -> navController.navigate(screen.route) {
-                                popUpTo(navController.graph.findStartDestination().id) {
-                                    saveState = true
-                                }
+                                // Home, not the graph's start destination: on first launch the
+                                // start is onboarding, which is no longer on the stack.
+                                popUpTo(Screen.Home.route) { inclusive = false }
                                 launchSingleTop = true
-                                restoreState = true
                             }
                         }
                     },
