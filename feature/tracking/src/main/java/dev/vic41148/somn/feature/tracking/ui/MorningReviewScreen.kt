@@ -100,7 +100,11 @@ fun MorningReviewScreen(
                 containerColor = MaterialTheme.colorScheme.tertiaryContainer
             ) {
                 Text(
-                    text = "Tracking stopped early. This session may be missing data from later in the night.",
+                    // Partial covers two cases: tracking was cut short, or smart wake started it on its own
+                    // when the wake window opened because tracking was not running (issue #2).
+                    text = "Tracking did not cover the whole night. It stopped early, or Somn " +
+                        "started it automatically when your wake window opened. Stats only " +
+                        "cover the time that was tracked. Start tracking at bedtime for a full night.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onTertiaryContainer
                 )

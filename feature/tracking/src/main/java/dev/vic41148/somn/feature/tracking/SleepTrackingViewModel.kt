@@ -30,6 +30,7 @@ import dev.vic41148.somn.core.notifications.DeepSleepAlertNotifier
 import dev.vic41148.somn.core.notifications.HormonalPhaseNotifier
 import dev.vic41148.somn.core.notifications.PPDRiskNotifier
 import dev.vic41148.somn.feature.tracking.service.SleepTrackingService
+import dev.vic41148.somn.feature.tracking.service.AlarmEndedSessionStore
 import dev.vic41148.somn.feature.tracking.service.TrackingState
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.Flow
@@ -38,12 +39,14 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 @HiltViewModel
 class SleepTrackingViewModel @Inject constructor(
+    @dagger.hilt.android.qualifiers.ApplicationContext private val appContext: android.content.Context,
     private val sleepRepository: SleepRepository,
     private val userProfileRepository: UserProfileRepository,
     private val preferencesRepository: SomnPreferencesRepository,
@@ -173,6 +176,31 @@ class SleepTrackingViewModel @Inject constructor(
     init {
         checkIncompleteSession()
         loadLastSession()
+        completeSessionsEndedByAlarm()
+    }
+
+    /**
+     * When an alarm rings, the tracking service stops itself and leaves the session here. Score
+     * it the same way a manual Stop does, so the morning review and Home show last night.
+     */
+    private fun completeSessionsEndedByAlarm() {
+        viewModelScope.launch {
+            SleepTrackingService.sessionEndedByAlarm.filterNotNull().collect { ended ->
+                val session = sleepRepository.getSession(ended.sessionId)
+                if (session != null && !session.isCompleted) {
+                    completeAndScore(
+                        session = session,
+                        endTimeMillis = ended.endedAtMillis,
+                        // A session the window trigger had to start (or resume after the OS
+                        // killed tracking) only covers part of the night.
+                        isPartial = ended.startedBySmartWake,
+                        avgBrpm = ended.avgBrpm
+                    )
+                }
+                SleepTrackingService.consumeSessionEndedByAlarm(ended.sessionId)
+                AlarmEndedSessionStore.clear(appContext, ended.sessionId)
+            }
+        }
     }
 
     /**
@@ -187,6 +215,20 @@ class SleepTrackingViewModel @Inject constructor(
             if (SleepTrackingService.trackingState.value != TrackingState.IDLE) return@launch
 
             val session = sleepRepository.getActiveSession() ?: return@launch
+            // An alarm-ended session is completed (not as partial) by completeSessionsEndedByAlarm.
+            if (SleepTrackingService.sessionEndedByAlarm.value?.sessionId == session.id) return@launch
+            // The alarm ended it but the process died before it was scored (issue #5): score it
+            // as a normal night ending at the alarm, not as an interrupted one.
+            AlarmEndedSessionStore.get(appContext, session.id)?.let { ended ->
+                completeAndScore(
+                    session = session,
+                    endTimeMillis = ended.endedAtMillis,
+                    isPartial = ended.startedBySmartWake,
+                    avgBrpm = session.avgBreathingRateBrpm
+                )
+                AlarmEndedSessionStore.clear(appContext, session.id)
+                return@launch
+            }
             val latestEpoch = sleepRepository.getLatestEpoch(session.id)
             val referenceMillis = latestEpoch?.timestampMillis ?: session.startTimeMillis
             val staleThresholdMillis = 2 * EPOCH_DURATION_MS
@@ -273,45 +315,54 @@ class SleepTrackingViewModel @Inject constructor(
             // query, including the morning alerts below. Instead it exposes the epoch here and the
             // ViewModel writes it, synchronously and in order, before it reads the epoch list back.
             flushPendingFinalEpoch()
+            completeAndScore(session, System.currentTimeMillis(), isPartial = false)
+        }
+    }
 
-            val epochs = sleepRepository.getEpochs(session.id)
-            val now = System.currentTimeMillis()
+    /** Scores and stores a finished session, then runs the morning follow-ups (alerts, sync, backup). */
+    private suspend fun completeAndScore(
+        session: SleepSession,
+        endTimeMillis: Long,
+        isPartial: Boolean,
+        avgBrpm: Float? = SleepTrackingService.currentAvgBrpm.value
+    ) {
+        val epochs = sleepRepository.getEpochs(session.id)
+        val now = endTimeMillis
 
-            val sessionAudioEvents = sleepRepository.getAudioEvents(session.id)
-            _audioEvents.value = sessionAudioEvents
-            val (targetSleepMinutes, oversleepThresholdMinutes) = loadOversleepInputs()
+        val sessionAudioEvents = sleepRepository.getAudioEvents(session.id)
+        _audioEvents.value = sessionAudioEvents
+        val (targetSleepMinutes, oversleepThresholdMinutes) = loadOversleepInputs()
 
-            val completedSession = buildCompletedSession(
-                session = session,
-                epochs = epochs,
-                coughCount = sessionAudioEvents.count { it.type == dev.vic41148.somn.core.domain.model.AudioEventType.COUGH },
-                endTimeMillis = now,
-                avgBrpm = SleepTrackingService.currentAvgBrpm.value,
-                isPartial = false,
-                targetSleepMinutes = targetSleepMinutes,
-                oversleepThresholdMinutes = oversleepThresholdMinutes
-            )
+        val completedSession = buildCompletedSession(
+            session = session,
+            epochs = epochs,
+            coughCount = sessionAudioEvents.count { it.type == dev.vic41148.somn.core.domain.model.AudioEventType.COUGH },
+            endTimeMillis = now,
+            avgBrpm = avgBrpm,
+            isPartial = isPartial,
+            targetSleepMinutes = targetSleepMinutes,
+            oversleepThresholdMinutes = oversleepThresholdMinutes
+        )
 
-            // Calculate the score
-            val score = calculateScore(completedSession)
-            val scoredSession = completedSession.copy(sleepScore = score.totalScore)
+        // Calculate the score
+        val score = calculateScore(completedSession)
+        val scoredSession = completedSession.copy(sleepScore = score.totalScore)
 
-            sleepRepository.completeSession(scoredSession)
-            _lastSession.value = scoredSession
-            _lastScore.value = score
+        sleepRepository.completeSession(scoredSession)
+        _lastSession.value = scoredSession
+        _lastScore.value = score
 
-            notifyMorningAlerts(scoredSession)
-            syncToHealthConnect(scoredSession, epochs)
+        notifyMorningAlerts(scoredSession)
+        syncToHealthConnect(scoredSession, epochs)
 
-            // Trigger NAS sync (silent backup + NAS upload + prune)
-            try {
-                val request = androidx.work.OneTimeWorkRequestBuilder<dev.vic41148.somn.core.data.backup.NasSyncWorker>()
-                    .addTag(dev.vic41148.somn.core.data.backup.NasSyncWorker.TAG)
-                    .build()
-                androidx.work.WorkManager.getInstance(context).enqueue(request)
-            } catch (e: Exception) {
-                android.util.Log.e("SleepTrackingViewModel", "Failed to enqueue NAS sync", e)
-            }
+        // Trigger NAS sync (silent backup + NAS upload + prune)
+        try {
+            val request = androidx.work.OneTimeWorkRequestBuilder<dev.vic41148.somn.core.data.backup.NasSyncWorker>()
+                .addTag(dev.vic41148.somn.core.data.backup.NasSyncWorker.TAG)
+                .build()
+            androidx.work.WorkManager.getInstance(appContext).enqueue(request)
+        } catch (e: Exception) {
+            android.util.Log.e("SleepTrackingViewModel", "Failed to enqueue NAS sync", e)
         }
     }
 

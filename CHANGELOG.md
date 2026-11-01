@@ -5,6 +5,23 @@ Release for every `v*` tag using the section of this file whose header contains
 the tag — keep section headers unique and tag-containing (for example
 `## Somn v0.1.2 — ...`).
 
+## Somn v0.2.2-beta.1 — tab fixes (pre-release)
+
+- **Every bottom-bar tab opens its own page.** Tabs used to restore the last page opened inside them (an alarm being edited, a session), so the Alarms tab could stop showing the alarm list. Each tap now lands on the tab's top-level page, and a page opened from a tab keeps that tab highlighted.
+- **A release tag without its own changelog section still publishes,** using the newest section, instead of failing after the APK is built.
+- **Releases can be started from the Actions tab** (Release → Run workflow, with a tag name), which creates the tag itself.
+
+## Somn v0.2.1-beta.1 — smart wake fixes (pre-release)
+
+- **Smart wake watches the window even if you forget to start tracking.** An exact alarm at the window start starts movement-only tracking, or resumes a session the OS killed.
+- **Longer nights keep tracking.** The tracking wake lock now lasts 14 hours instead of 8.
+- **Movement is measured against the phone's own resting reading** instead of a fixed 9.81 m/s², and a clear movement burst inside the window counts as a wake moment.
+- **The alarm ends and scores the night,** so stats appear without tapping Stop, even if Android kills Somn before you open it.
+- **Alarm vibration works in silent mode and Do Not Disturb.** It is tagged as an alarm, starts soft and builds up, and leads the sound by 30 seconds. New per-alarm Vibrate and Vibration only switches.
+- **CI uploads the debug APK** so a test phone can install it directly.
+- **Pre-release tags** (`v0.2.1-beta.1`) publish as GitHub pre-releases and keep a clean version number.
+- **The Home tab always goes Home.** It used to restore whatever screen was last open on top of Home (tracking, a morning review), so tapping it seemed to do nothing.
+
 ## Somn v0.2.0 — widgets & consistency
 
 - **Widget suite.** Morning Briefing, Last Night, Weekly, Sleep Debt, Alarm, and Weekly Rhythm widgets, with score rings and picker previews.

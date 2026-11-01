@@ -58,6 +58,8 @@ class AlarmService : Service() {
     private var vibrator: Vibrator? = null
     private val serviceScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private var volumeJob: Job? = null
+    private var soundJob: Job? = null
+    private var alarmStartJob: Job? = null
     private var wakeConfirmJob: Job? = null
     private var maxSnoozeCount = 3
     private var wakeConfirmAttempts = 0
@@ -81,6 +83,9 @@ class AlarmService : Service() {
 
         /** Fail-open cap, after this many missed wake confirmations, dismiss outright rather than ring forever. */
         private const val MAX_WAKE_CONFIRM_ATTEMPTS = 3
+
+        /** Vibration runs alone for this long before the sound starts fading in. */
+        private const val VIBRATION_LEAD_MS = 30_000L
 
         private val _isAlarmFiring = MutableStateFlow(false)
         val isAlarmFiring: StateFlow<Boolean> = _isAlarmFiring.asStateFlow()
@@ -287,72 +292,167 @@ class AlarmService : Service() {
     }
 
     private fun startAlarm(vibrationEnabled: Boolean, gradualSeconds: Int) {
-        serviceScope.launch {
+        alarmStartJob?.cancel()
+        // Tracked so a dismiss that lands while this is still loading cancels it, instead of the
+        // vibration starting after the alarm was already stopped.
+        alarmStartJob = serviceScope.launch {
             val profile = userProfileRepository.getProfile()
             val asdMode = profile?.neurodivergentProfile?.asdMode == true
+            val alarm = if (currentAlarmId != -1L) {
+                withContext(Dispatchers.IO) { alarmRepository.getAlarm(currentAlarmId) }
+            } else null
+            val vibrationOnly = alarm?.isVibrationOnly == true
 
-            // If ASD mode is on, force vibration only, no sound
-            val playSound = !asdMode
-            var soundStarted = false
+            // If ASD mode is on, or the alarm is set to vibration only, never play sound.
+            val playSound = !asdMode && !vibrationOnly
+            val vibrate = vibrationEnabled || asdMode || vibrationOnly
 
-            if (playSound) {
-                // prepare()/start() block synchronously, run off Dispatchers.Main so a slow or
-                // stuck ringtone provider cannot ANR the exact moment the alarm is meant to fire.
-                soundStarted = withContext(Dispatchers.IO) {
-                    try {
-                        val alarmUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
-                            ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+            // Vibration starts first, so a gentle buzz gets the first chance to wake you.
+            val vibrationStarted = vibrate && startVibration()
 
-                        mediaPlayer = MediaPlayer().apply {
-                            setAudioAttributes(
-                                AudioAttributes.Builder()
-                                    .setUsage(AudioAttributes.USAGE_ALARM)
-                                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                                    .build()
-                            )
-                            setDataSource(this@AlarmService, alarmUri)
-                            isLooping = true
-                            setVolume(0f, 0f)
-                            prepare()
-                            start()
-                        }
-                        true
-                    } catch (e: Exception) {
-                        android.util.Log.e("AlarmService", "Alarm sound failed to start, falling back to vibration", e)
-                        mediaPlayer?.release()
-                        mediaPlayer = null
-                        false
-                    }
+            if (!playSound) {
+                // ASD mode keeps its no-sound promise. A plain vibration-only alarm would rather
+                // make noise than let you oversleep.
+                if (!vibrationStarted && !asdMode) {
+                    // A vibration-only alarm on a phone whose vibrator refused to start would be
+                    // completely silent. Fall back to sound rather than miss the wake-up.
+                    android.util.Log.w("AlarmService", "Vibration failed on a silent alarm, playing sound instead")
+                    soundJob = launch { startSound(alarm?.soundUri, gradualSeconds) }
                 }
-
-                if (soundStarted) {
-                    // Gradually increase volume
-                    volumeJob = launch {
-                        val steps = gradualSeconds * 2  // Update every 500ms
-                        for (i in 1..steps) {
-                            val volume = i.toFloat() / steps
-                            mediaPlayer?.setVolume(volume, volume)
-                            delay(500)
-                        }
-                    }
-                }
+                return@launch
             }
 
-            // The code also forces Vibration on when sound failed to start (or was never attempted due
-            // to ASD mode). A broken/missing ringtone never leaves the alarm completely silent.
-            val finalVibrationEnabled = vibrationEnabled || asdMode || !soundStarted
-            if (finalVibrationEnabled) {
-                vibrator = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
-                    val vm = getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as VibratorManager
-                    vm.defaultVibrator
-                } else {
-                    @Suppress("DEPRECATION")
-                    getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
-                }
-
-                val pattern = longArrayOf(0, 500, 500, 500, 500, 500)
-                vibrator?.vibrate(VibrationEffect.createWaveform(pattern, 0))
+            soundJob = launch {
+                if (vibrationStarted) delay(VIBRATION_LEAD_MS)
+                val soundStarted = startSound(alarm?.soundUri, gradualSeconds)
+                // A broken/missing ringtone must never leave the alarm completely silent.
+                if (!soundStarted && !vibrationStarted) startVibration()
             }
+        }
+    }
+
+    /** Plays the alarm sound, fading in over [gradualSeconds]. @return true if playback started. */
+    private suspend fun startSound(soundUri: String?, gradualSeconds: Int): Boolean {
+        // prepare()/start() block synchronously, run off Dispatchers.Main so a slow or
+        // stuck ringtone provider cannot ANR the exact moment the alarm is meant to fire.
+        val started = try { withContext(Dispatchers.IO) {
+            try {
+                val customUri = soundUri
+                    ?.takeIf { it.isNotBlank() && it != dev.vic41148.somn.core.domain.model.Alarm.SOUND_SILENT }
+                    ?.let { android.net.Uri.parse(it) }
+                val alarmUri = customUri
+                    ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
+                    ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+
+                mediaPlayer = MediaPlayer().apply {
+                    setAudioAttributes(
+                        AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_ALARM)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                            .build()
+                    )
+                    setDataSource(this@AlarmService, alarmUri)
+                    isLooping = true
+                    setVolume(0f, 0f)
+                    prepare()
+                    start()
+                }
+                true
+            } catch (e: Exception) {
+                android.util.Log.e("AlarmService", "Alarm sound failed to start", e)
+                mediaPlayer?.release()
+                mediaPlayer = null
+                false
+            }
+        } } catch (e: kotlinx.coroutines.CancellationException) {
+            // Dismissed while the player was preparing: do not leave it ringing in the background.
+            mediaPlayer?.apply { runCatching { stop() }; release() }
+            mediaPlayer = null
+            throw e
+        }
+
+        if (started) {
+            // Gradually increase volume
+            volumeJob = serviceScope.launch {
+                val steps = (gradualSeconds * 2).coerceAtLeast(1)  // Update every 500ms
+                for (i in 1..steps) {
+                    val volume = i.toFloat() / steps
+                    mediaPlayer?.setVolume(volume, volume)
+                    delay(500)
+                }
+            }
+        }
+        return started
+    }
+
+    /**
+     * Starts a looping alarm vibration. @return true if the vibrator accepted it.
+     *
+     * The vibration is tagged as an alarm. Untagged vibrations (what this used to send) are
+     * treated as "unknown" usage, which Android, and LineageOS-based builds like /e/OS in
+     * particular, drop when the phone is on silent, in Do Not Disturb, or the app is not on
+     * screen. Alarm-tagged vibrations follow the alarm vibration setting and bypass those.
+     */
+    private fun startVibration(): Boolean {
+        val v = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            (getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as VibratorManager).defaultVibrator
+        } else {
+            @Suppress("DEPRECATION")
+            getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
+        }
+        if (!v.hasVibrator()) {
+            android.util.Log.w("AlarmService", "Device reports no vibrator")
+            return false
+        }
+        vibrator = v
+        val effect = gentleRampEffect(v.hasAmplitudeControl())
+        return try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                v.vibrate(
+                    effect,
+                    android.os.VibrationAttributes.createForUsage(android.os.VibrationAttributes.USAGE_ALARM)
+                )
+            } else {
+                @Suppress("DEPRECATION")
+                v.vibrate(
+                    effect,
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_ALARM)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                        .build()
+                )
+            }
+            true
+        } catch (e: Exception) {
+            android.util.Log.e("AlarmService", "Vibration failed to start", e)
+            false
+        }
+    }
+
+    /**
+     * Soft pulses that grow stronger over about 30 seconds, then a steady strong pulse that
+     * repeats until dismissed. Phones without amplitude control get plain on/off pulses that
+     * start short and lengthen instead.
+     */
+    private fun gentleRampEffect(amplitudeControl: Boolean): VibrationEffect {
+        val rampSteps = 15
+        val timings = ArrayList<Long>()
+        val amplitudes = ArrayList<Int>()
+        timings += 0L; amplitudes += 0
+        for (i in 1..rampSteps) {
+            val on = if (amplitudeControl) 600L else 150L + i * 40L
+            timings += on
+            amplitudes += if (amplitudeControl) 40 + (215 * i / rampSteps) else 255
+            timings += 2000L - on
+            amplitudes += 0
+        }
+        val repeatFrom = timings.size
+        timings += 800L; amplitudes += 255
+        timings += 700L; amplitudes += 0
+        return if (amplitudeControl) {
+            VibrationEffect.createWaveform(timings.toLongArray(), amplitudes.toIntArray(), repeatFrom)
+        } else {
+            VibrationEffect.createWaveform(timings.toLongArray(), repeatFrom)
         }
     }
 
@@ -414,6 +514,10 @@ class AlarmService : Service() {
     }
 
     private fun stopAlarm() {
+        alarmStartJob?.cancel()
+        alarmStartJob = null
+        soundJob?.cancel()
+        soundJob = null
         volumeJob?.cancel()
         mediaPlayer?.apply {
             if (isPlaying) stop()

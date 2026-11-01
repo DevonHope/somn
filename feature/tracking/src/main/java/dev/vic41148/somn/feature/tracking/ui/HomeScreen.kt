@@ -623,6 +623,12 @@ fun HomeScreen(
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
+                        Text(
+                            text = "Start tracking at bedtime for full-night stats. If you forget, " +
+                                "Somn starts watching when the window opens.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
                     Icon(
                         imageVector = Icons.Default.Alarm,

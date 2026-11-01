@@ -18,6 +18,15 @@ data class Alarm(
     val gradualVolumeSeconds: Int = 60,
     val captchaType: CaptchaType = CaptchaType.NONE
 ) {
+    companion object {
+        /** [soundUri] value meaning "vibration only, never play a sound". */
+        const val SOUND_SILENT = "silent"
+    }
+
+    /** True when this alarm should wake by vibration alone. */
+    val isVibrationOnly: Boolean
+        get() = soundUri == SOUND_SILENT
+
     val timeFormatted: String
         get() {
             val h = if (hour % 12 == 0) 12 else hour % 12

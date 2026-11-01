@@ -30,7 +30,8 @@ val releaseTag: String = runCatching {
     providers.exec { commandLine("git", "describe", "--tags", "--abbrev=0") }
         .standardOutput.asText.get().trim()
 }.getOrDefault("v0.1.2")
-val releaseParts: List<Int> = releaseTag.trimStart('v').split(".").map { it.toIntOrNull() ?: 0 }
+// A pre-release suffix (v0.2.1-beta.1) is dropped so it still parses as 0.2.1.
+val releaseParts: List<Int> = releaseTag.trimStart('v').substringBefore('-').split(".").map { it.toIntOrNull() ?: 0 }
 val derivedVersionCode: Int =
     (releaseParts.getOrElse(0) { 0 }) * 1_000_000 +
         (releaseParts.getOrElse(1) { 0 }) * 1_000 +

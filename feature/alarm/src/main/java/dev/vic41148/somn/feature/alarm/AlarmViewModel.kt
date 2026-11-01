@@ -96,7 +96,9 @@ class AlarmViewModel @Inject constructor(
         // It was missing entirely. A new alarm always took the Alarm 30-minute default and silently
         // discarded whatever the user had just set on the edit screen's wake-window slider. Only
         // editing an existing alarm ever persisted the value.
-        wakeWindowMinutes: Int = 30
+        wakeWindowMinutes: Int = 30,
+        vibrationEnabled: Boolean = true,
+        vibrationOnly: Boolean = false
     ) {
         viewModelScope.launch {
             val alarm = Alarm(
@@ -105,6 +107,8 @@ class AlarmViewModel @Inject constructor(
                 label = label,
                 repeatDays = repeatDays,
                 wakeWindowMinutes = wakeWindowMinutes,
+                vibrationEnabled = vibrationEnabled || vibrationOnly,
+                soundUri = if (vibrationOnly) Alarm.SOUND_SILENT else "",
                 captchaType = try {
                     CaptchaType.valueOf(captchaType.uppercase())
                 } catch (e: Exception) {

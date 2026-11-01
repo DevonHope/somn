@@ -37,6 +37,8 @@ fun AlarmEditScreen(
     // UI state
     var label by rememberSaveable { mutableStateOf("") }
     var wakeWindow by rememberSaveable { mutableStateOf(30f) }
+    var vibrate by rememberSaveable { mutableStateOf(true) }
+    var vibrationOnly by rememberSaveable { mutableStateOf(false) }
     var isInitialized by remember { mutableStateOf(false) }
 
     LaunchedEffect(alarmId) {
@@ -85,6 +87,8 @@ fun AlarmEditScreen(
             editingAlarm?.let {
                 label = it.label
                 wakeWindow = it.wakeWindowMinutes.toFloat()
+                vibrate = it.vibrationEnabled
+                vibrationOnly = it.isVibrationOnly
                 repeatDays = it.repeatDays
                 // The picker used to snapshot editingAlarm?.hour at first composition (null →
                 // 7:00) and never sync, so editing an alarm always opened showing 7:00 AM.
@@ -278,6 +282,52 @@ fun AlarmEditScreen(
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
 
+            Spacer(modifier = Modifier.height(16.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Vibrate", style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        text = "Starts with soft pulses that build up. Sound fades in 30 s later.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(
+                    checked = vibrate || vibrationOnly,
+                    onCheckedChange = {
+                        vibrate = it
+                        if (!it) vibrationOnly = false
+                    }
+                )
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Vibration only", style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        text = "No sound at all. If the phone cannot vibrate, sound plays instead.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(
+                    checked = vibrationOnly,
+                    onCheckedChange = {
+                        vibrationOnly = it
+                        if (it) vibrate = true
+                    }
+                )
+            }
+
                 Spacer(modifier = Modifier.height(24.dp))
             }
 
@@ -297,7 +347,13 @@ fun AlarmEditScreen(
                                     minute = timePickerState.minute,
                                     label = label,
                                     repeatDays = repeatDays,
-                                    wakeWindowMinutes = wakeWindow.toInt()
+                                    wakeWindowMinutes = wakeWindow.toInt(),
+                                    vibrationEnabled = vibrate || vibrationOnly,
+                                    soundUri = when {
+                                        vibrationOnly -> dev.vic41148.somn.core.domain.model.Alarm.SOUND_SILENT
+                                        editingAlarm!!.isVibrationOnly -> ""
+                                        else -> editingAlarm!!.soundUri
+                                    }
                                 )
                             )
                         } else {
@@ -306,7 +362,9 @@ fun AlarmEditScreen(
                                 minute = timePickerState.minute,
                                 label = label,
                                 repeatDays = repeatDays,
-                                wakeWindowMinutes = wakeWindow.toInt()
+                                wakeWindowMinutes = wakeWindow.toInt(),
+                                vibrationEnabled = vibrate || vibrationOnly,
+                                vibrationOnly = vibrationOnly
                             )
                         }
                         onSaved()
