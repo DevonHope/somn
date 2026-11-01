@@ -8,13 +8,24 @@ name: Release
 #   KEY_ALIAS            - alias used at keytool -genkey time
 #   KEYSTORE_PASSWORD    - keystore password
 #   KEY_PASSWORD         - private-key password
+#
+# Two ways to start it: push a v* tag, or run it from the Actions tab (or the API) with a tag
+# name. A manual run tags the commit it ran on, so no tag has to be made by hand first.
 on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to create, e.g. v0.2.2-beta.1 (a "-" suffix makes it a pre-release)'
+        required: true
+
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ inputs.tag || github.ref }}
   cancel-in-progress: false
 
 # Least privilege, declared on the job (not the workflow) so the scope visibly
@@ -33,6 +44,16 @@ jobs:
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      # The app's version comes from `git describe --tags`. A manual run has no tag yet, so tag
+      # the checked-out commit locally; the publish step creates the same tag on GitHub.
+      - name: Tag a manual run
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$TAG" == v* ]] || { echo "::error::Tag must start with v (got $TAG)"; exit 1; }
+          git tag "$TAG"
 
       - name: Set up JDK 17
         uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
@@ -68,7 +89,6 @@ jobs:
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
-          TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
           # Runner images preinstall several build-tools; use the newest installed apksigner.
@@ -101,8 +121,6 @@ jobs:
       # printed to the run log and uploaded alongside the APK as SHA256SUMS.txt.
       - name: Compute checksums
         shell: bash
-        env:
-          TAG: ${{ github.ref_name }}
         run: |
           cd app/build/outputs/apk/standalone/release
           sha256sum "Somn-${TAG}.apk" somn-bom.json > SHA256SUMS.txt
@@ -129,7 +147,7 @@ jobs:
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: |
-            app/build/outputs/apk/standalone/release/Somn-${{ github.ref_name }}.apk
+            app/build/outputs/apk/standalone/release/Somn-${{ env.TAG }}.apk
             app/build/outputs/apk/standalone/release/somn-bom.json
 
       # The GitHub Release title and body come from CHANGELOG.md (tracked, one
@@ -140,8 +158,6 @@ jobs:
       - name: Extract release notes for this tag
         id: notes
         shell: bash
-        env:
-          TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
           awk -v tag="$TAG" '
@@ -173,11 +189,13 @@ jobs:
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
         with:
           name: ${{ steps.notes.outputs.title }}
+          tag_name: ${{ env.TAG }}
+          target_commitish: ${{ github.sha }}
           # A tag with a suffix (v0.2.1-beta.1) is published as a pre-release.
-          prerelease: ${{ contains(github.ref_name, '-') }}
+          prerelease: ${{ contains(env.TAG, '-') }}
           body_path: ${{ runner.temp }}/release-body.md
           files: |
-            app/build/outputs/apk/standalone/release/Somn-${{ github.ref_name }}.apk
+            app/build/outputs/apk/standalone/release/Somn-${{ env.TAG }}.apk
             app/build/outputs/apk/standalone/release/SHA256SUMS.txt
             app/build/outputs/apk/standalone/release/SHA256SUMS.txt.cosign.bundle
             app/build/outputs/apk/standalone/release/somn-bom.json
