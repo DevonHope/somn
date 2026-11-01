@@ -5,6 +5,10 @@ Release for every `v*` tag using the section of this file whose header contains
 the tag — keep section headers unique and tag-containing (for example
 `## Somn v0.1.2 — ...`).
 
+## Somn v0.2.2-beta.2 — Home tab fix (pre-release)
+
+- **The Home tab works again.** The bottom bar kept calling the tap handler from the app's first screen, which still thought Home was open, so Home taps were ignored. It now always uses the current handler.
+
 ## Somn v0.2.2-beta.1 — tab fixes (pre-release)
 
 - **Every bottom-bar tab opens its own page.** Tabs used to restore the last page opened inside them (an alarm being edited, a session), so the Alarms tab could stop showing the alarm list. Each tap now lands on the tab's top-level page, and a page opened from a tab keeps that tab highlighted.
