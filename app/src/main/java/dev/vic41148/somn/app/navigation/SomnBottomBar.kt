@@ -31,6 +31,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -96,6 +97,10 @@ fun SomnBottomBar(
     // Box nor the Scaffold slot clips it), so no dead reserve space is kept
     // for it, an empty reserve would paint as a black band over content.
     val bubbleOverlap = 10.dp
+    // The gesture loop below lives in a pointerInput keyed only on the tab count, so it would
+    // keep calling the first onSelect it ever saw, along with every value that lambda captured
+    // (such as the route shown at first launch). Always call the latest one.
+    val currentOnSelect by rememberUpdatedState(onSelect)
     val pillShape = remember { RoundedCornerShape(percent = 50) }
 
     var barWidthPx by remember { mutableFloatStateOf(0f) }
@@ -190,7 +195,7 @@ fun SomnBottomBar(
                         var idx = indexAt(down.position.x)
                         pressedIndex = idx
                         haptics.performHapticFeedback(HapticFeedbackType.SegmentTick)
-                        onSelect(screens[idx])
+                        currentOnSelect(screens[idx])
 
                         try {
                             var pointerUp = false
@@ -205,7 +210,7 @@ fun SomnBottomBar(
                                         idx = newIdx
                                         pressedIndex = idx
                                         haptics.performHapticFeedback(HapticFeedbackType.SegmentTick)
-                                        onSelect(screens[idx])
+                                        currentOnSelect(screens[idx])
                                     }
                                     change.consume()
                                 }
